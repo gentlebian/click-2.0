@@ -163,9 +163,9 @@ class TCPRewriter : public IPRewriterBase { public:
 inline void
 TCPRewriter::destroy_flow(IPRewriterFlow *flow)
 {
-    unmap_flow(flow, _map);
-    static_cast<TCPFlow *>(flow)->~TCPFlow();
-    _allocator.deallocate(flow);
+    unmap_flow(flow, _map);	//delete flow from map;
+    static_cast<TCPFlow *>(flow)->~TCPFlow();//havent't found this destructor
+    _allocator.deallocate(flow);//another data structure to store flow. see hashallocator.hh
 }
 
 inline tcp_seq_t

@@ -236,7 +236,7 @@ IPRewriterBase::unmap_flow(IPRewriterFlow *flow, Map &map,
 	map.erase(it);
     it = reply_map_ptr->find(flow->entry(1).hashkey());
     if (it.get() == &flow->entry(1))
-	reply_map_ptr->erase(it);
+	reply_map_ptr->erase(it); //erase both flow info in both map and reply map.
 }
 
 CLICK_ENDDECLS

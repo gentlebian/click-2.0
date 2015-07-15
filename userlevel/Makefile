@@ -1,6 +1,6 @@
 ## The following line supports click-mkmindriver and should not be changed.
 ## Click userlevel driver Makefile ##
-SHELL = /bin/bash
+SHELL = /bin/sh
 
 top_srcdir := ..
 srcdir := .
@@ -80,14 +80,14 @@ STD_ELEMENT_OBJS = addressinfo.o alignmentinfo.o \
 OBJS = $(ELEMENT_OBJS) $(ELEMENTSCONF).o click.o
 
 CPPFLAGS =  -DCLICK_USERLEVEL
-CFLAGS = -g -O2
-CXXFLAGS = -g -O2
+CFLAGS = -g 
+CXXFLAGS = -g 
 
 DEFS = -DHAVE_CONFIG_H
 INCLUDES = -I$(top_builddir)/include -I$(top_srcdir)/include \
-	-I$(srcdir) -I$(top_srcdir)  
+	-I$(srcdir) -I$(top_srcdir) 
 LDFLAGS = 
-LIBS =  `$(top_builddir)/click-buildtool --otherlibs` $(ELEMENT_LIBS)
+LIBS =  `$(top_builddir)/click-buildtool --otherlibs` $(ELEMENT_LIBS)  `mysql_config --cflags --libs`
 
 CXXCOMPILE = $(CXX) $(DEFS) $(INCLUDES) $(CPPFLAGS) $(CXXFLAGS)
 CXXLD = $(CXX)

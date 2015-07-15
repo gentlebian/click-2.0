@@ -1,7 +1,7 @@
 # Warning: this file must be usable by regular make
 # (unlike the Makefiles in subdirectories).
 
-SHELL = /bin/bash
+SHELL = /bin/sh
 
 
 PACKAGE = click

@@ -1,5 +1,5 @@
 ## Click bsdmodule driver Makefile ##
-SHELL = /bin/bash
+SHELL = /bin/sh
 
 srcdir := .
 top_srcdir := ..

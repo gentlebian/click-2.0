@@ -1,4 +1,4 @@
-SHELL = /bin/bash
+SHELL = /bin/sh
 
 
 top_srcdir = ../..

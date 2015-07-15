@@ -2,6 +2,7 @@
 #define CLICK_IPREWRITER_HH
 #include "tcprewriter.hh"
 #include "udprewriter.hh"
+#include <mysql/mysql.h>
 CLICK_DECLS
 class UDPRewriter;
 
@@ -218,7 +219,7 @@ class IPRewriter : public TCPRewriter { public:
 	    return &_udp_map;
 	else
 	    return 0;
-    }
+    }// called by push to add flow into flow table
     IPRewriterEntry *add_flow(int ip_p, const IPFlowID &flowid,
 			      const IPFlowID &rewritten_flowid, int input);
     void destroy_flow(IPRewriterFlow *flow);
@@ -228,11 +229,13 @@ class IPRewriter : public TCPRewriter { public:
 	else
 	    return flow->expiry() + _udp_timeouts[0] - _udp_timeouts[1];
     }
-
+	// send packets to corresponding port and put ipheader into flowtable;
     void push(int, Packet *);
 
     void add_handlers();
 
+	// restore from crash via remote database
+	void restore();
   private:
 
     Map _udp_map;
@@ -245,19 +248,44 @@ class IPRewriter : public TCPRewriter { public:
     }
     static String udp_mappings_handler(Element *e, void *user_data);
 
+	/* set to true if crashed */
+	bool crashed = true;
+
+	/* background unit to copy and send flow to remote database */
+	const char *server;
+	const char *user;
+	const char *passwd;
+	const char *database;
+
+	MYSQL *conn;
+	MYSQL *res;
+	MYSQL mysql;
+	MYSQL row;
+
+	void init_connection();
+	void destroy_connection();
+	void remote_copy_flow(unsigned char ip_p, IPFlowID &flowid, IPFlowID &rewritten_flowid, int port);
+	void remote_del_flow(unsigned char ip_p, IPFlowID flowid);
 };
 
 
 inline void
 IPRewriter::destroy_flow(IPRewriterFlow *flow)
 {
-    if (flow->ip_p() == IP_PROTO_TCP)
-	TCPRewriter::destroy_flow(flow);
-    else {
-	unmap_flow(flow, _udp_map, &reply_udp_map(flow->owner_input()));
+    if (flow->ip_p() == IP_PROTO_TCP){
+		TCPRewriter::destroy_flow(flow); // this will also call unmap_flow. it will set the reply _map accordingly. 
+    } else {
+	unmap_flow(flow, _udp_map, &reply_udp_map(flow->owner_input()));// delete flow info of all involved flows in maps; all TCP in _map, all UDP in _udp_map 
 	flow->~IPRewriterFlow();
 	_udp_allocator.deallocate(flow);
     }
+
+	// What ever the case, need to delete the flow of both sides
+	if(conn){
+		unsigned char tmp = flow->ip_p();
+		remote_del_flow(tmp, flow->entry(0).flowid());
+		remote_del_flow(tmp, flow->entry(1).flowid());
+	}
 }
 
 CLICK_ENDDECLS

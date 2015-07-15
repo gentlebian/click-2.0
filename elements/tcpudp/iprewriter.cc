@@ -26,11 +26,24 @@
 #include <click/error.hh>
 #include <click/timer.hh>
 #include <click/router.hh>
+// other includes for using socket
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <sstream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <mysql/mysql.h>
+
+using namespace std;
+
 CLICK_DECLS
 
 IPRewriter::IPRewriter()
     : _udp_map(0)
 {
+	init_connection();
+	//restore();
 }
 
 IPRewriter::~IPRewriter()
@@ -84,7 +97,7 @@ IPRewriter::get_entry(int ip_p, const IPFlowID &flowid, int input)
     }
     return m;
 }
-
+// add flow into _udp_map and return IPRewriterEntry. called by push
 IPRewriterEntry *
 IPRewriter::add_flow(int ip_p, const IPFlowID &flowid,
 		     const IPFlowID &rewritten_flowid, int input)
@@ -111,13 +124,20 @@ IPRewriter::push(int port, Packet *p_in)
     WritablePacket *p = p_in->uniqueify();
     click_ip *iph = p->ip_header();
 
+/*#########################*/
+	if(crashed){
+		restore();
+		crashed = false;
+	}
+/*#########################*/
+
     // handle non-first fragments
     if ((iph->ip_p != IP_PROTO_TCP && iph->ip_p != IP_PROTO_UDP)
 	|| !IP_FIRSTFRAG(iph)
 	|| p->transport_length() < 8) {
 	const IPRewriterInput &is = _input_specs[port];
 	if (is.kind == IPRewriterInput::i_nochange)
-	    output(is.foutput).push(p);
+	    output(is.foutput).push(p);// don't quite understand here, need to make sure if go into here.
 	else
 	    p->kill();
 	return;
@@ -128,18 +148,22 @@ IPRewriter::push(int port, Packet *p_in)
     IPRewriterEntry *m = map->get(flowid);
 
     if (!m) {			// create new mapping
-	IPRewriterInput &is = _input_specs.at_u(port);
-	IPFlowID rewritten_flowid = IPFlowID::uninitialized_t();
-	int result = is.rewrite_flowid(flowid, rewritten_flowid, p, iph->ip_p == IP_PROTO_TCP ? 0 : IPRewriterInput::mapid_iprewriter_udp);
-	if (result == rw_addmap)
+	IPRewriterInput &is = _input_specs.at_u(port); //get the pattern
+	IPFlowID rewritten_flowid = IPFlowID::uninitialized_t(); //get uninitialized flowid
+	int result = is.rewrite_flowid(flowid, rewritten_flowid, p, iph->ip_p == IP_PROTO_TCP ? 0 : IPRewriterInput::mapid_iprewriter_udp); //make the rewritten_flowid accordingly.
+	if (result == rw_addmap) //when the add map situation happens
 	    m = IPRewriter::add_flow(iph->ip_p, flowid, rewritten_flowid, port);
 	if (!m) {
-	    checked_output_push(result, p);
+	    checked_output_push(result, p);// if not success to add into flowtable, just push it out as specified. 
 	    return;
 	} else if (_annos & 2)
 	    m->flow()->set_reply_anno(p->anno_u8(_annos >> 2));
+	
+		// sent newly added mapping to database
+		remote_copy_flow(iph->ip_p, flowid, rewritten_flowid, port);
+		remote_del_flow(iph->ip_p, flowid);
     }
-
+	// set the expiry time;
     click_jiffies_t now_j = click_jiffies();
     IPRewriterFlow *mf = m->flow();
     if (iph->ip_p == IP_PROTO_TCP) {
@@ -153,8 +177,9 @@ IPRewriter::push(int port, Packet *p_in)
 	mf->apply(p, m->direction(), _annos);
 	mf->change_expiry_by_timeout(_heap, now_j, _udp_timeouts);
     }
-
+	//NOT SURE WHAT THIS DO, NEED TO KNOW!
     output(m->output()).push(p);
+
 }
 
 String
@@ -176,6 +201,111 @@ IPRewriter::add_handlers()
     add_read_handler("tcp_mappings", tcp_mappings_handler);
     add_read_handler("udp_mappings", udp_mappings_handler);
     add_rewriter_handlers(true);
+}
+
+/* background unit to copy and send flow to remote database */
+void 
+IPRewriter::init_connection(){
+	server      = "localhost";
+    user        = "user";
+    passwd      = "password";
+    database    = "flow_table";
+
+	mysql_init(&mysql);
+	conn = mysql_real_connect(&mysql, server, user,
+							  passwd, database, 3306,
+							  0, 0);
+	if( conn == NULL )
+		cout << "connection to database failed" << endl;
+}
+
+void 
+IPRewriter::destroy_connection(){
+	//mysql_free_result(res);
+	mysql_close(conn);
+}
+
+void 
+IPRewriter::remote_copy_flow(unsigned char ip_p, IPFlowID &flowid, IPFlowID &rewritten_flowid, int port){
+	int res;
+	string query("INSERT INTO ftable (pro, saddr, sport, daddr, dport, _saddr, _sport, _daddr, _dport, port) VALUES ( '");
+	stringstream s;
+	// If connection failed, return;
+	if(conn==NULL) {
+		cout << "connection not set up" << endl;
+		return;
+	}
+
+	// Marshall parameters into query string
+	s << query  << ip_p << "', '" << flowid.saddr() << "', '" << flowid.sport() << "', '"<< flowid.daddr() << "', '" << flowid.dport() << "', '";
+	s << rewritten_flowid.saddr() << "', '" << rewritten_flowid.sport() << "', '" << rewritten_flowid.daddr() << "', '" << rewritten_flowid.dport() << "', '";
+	s << port << "' )";
+
+	// Send the insert query
+	res = mysql_query(conn, s.str().c_str());
+	if(res != 0){
+		cout << "copy failed" << endl;
+		return;
+	}
+
+}
+
+void 
+IPRewriter::remote_del_flow(unsigned char ip_p, IPFlowID flowid){
+	int res;
+	string query("DELETE FROM ftable WHERE ");
+	stringstream s;
+
+	if(conn==NULL) {
+        cout << "connection not set up" << endl;
+        return;
+    }
+
+	// Marshall parameters into query string
+	s << query << "pro = '" << ip_p << "' AND saddr = '" << flowid.saddr() << "' AND sport = '" << flowid.sport()<< "' AND daddr = '" << flowid.daddr() << "' AND dport = '" << flowid.dport() << "'";
+
+	// Send the delete query
+	res = mysql_query(conn, s.str().c_str()); 
+	if(res != 0){
+		cout << "remote deleting failed" << endl;
+		return;
+	}
+}
+
+void IPRewriter::restore(){
+	int res;
+	MYSQL_RES *result;
+	MYSQL_ROW row;
+
+	// check connection, if not connected initialize.
+	if(conn==NULL) {
+		init_connection();
+		if( conn==NULL ){
+	        cout << "connection not set up" << endl;
+    	    return;
+		}
+    }
+
+	// Fetch flow info from database and add into flow tables.
+	res = mysql_query(conn, "SELECT * FROM ftable");
+	if(res != 0){
+		cout << "fetching result failed" << endl;
+		return;
+	}
+
+	result = mysql_store_result(conn);
+
+	// Add flow row by row
+	while((row = mysql_fetch_row(result))){
+	// add_flow(iph->ip_p, flowid, rewritten_flowid, port);
+	
+		add_flow(atoi(row[0]), 
+				*(new IPFlowID(atoi(row[1]), (short)(atoi(row[2])), atoi(row[3]), (short)(atoi(row[4])))), 
+				*(new IPFlowID(atoi(row[5]), (short)(atoi(row[6])), atoi(row[7]), (short)(atoi(row[8])))), 
+				atoi(row[9]));
+	}
+	
+	cout << "finished initialization" << endl;
 }
 
 CLICK_ENDDECLS

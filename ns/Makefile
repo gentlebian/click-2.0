@@ -1,6 +1,6 @@
 ## The following line supports click-mkmindriver and should not be changed.
 ## Click ns driver Makefile ##
-SHELL = /bin/bash
+SHELL = /bin/sh
 
 top_srcdir := ..
 srcdir := .

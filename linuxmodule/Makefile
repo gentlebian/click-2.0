@@ -1,6 +1,6 @@
 ## The following line supports click-mkmindriver and should not be changed.
 ## Click linuxmodule driver Makefile ##
-SHELL = /bin/bash
+SHELL = /bin/sh
 
 subdir := linuxmodule
 conf_auxdir = $(top_srcdir)
