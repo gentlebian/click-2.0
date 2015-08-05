@@ -29,7 +29,8 @@
 // other includes for using socket
 #include <fstream>
 #include <iostream>
-#include <string>
+//#include <string>
+//#include <click/string>
 #include <sstream>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,8 +43,6 @@ CLICK_DECLS
 IPRewriter::IPRewriter()
     : _udp_map(0)
 {
-	init_connection();
-	//restore();
 }
 
 IPRewriter::~IPRewriter()
@@ -66,17 +65,39 @@ IPRewriter::cast(const char *n)
 int
 IPRewriter::configure(Vector<String> &conf, ErrorHandler *errh)
 {
+	String server, user, passwd, database;
+
     _udp_timeouts[0] = 60 * 5;	// 5 minutes
     _udp_timeouts[1] = 5;	// 5 seconds
+
+	backup = false;
+    restored = false;
 
     if (Args(this, errh).bind(conf)
 	.read("UDP_TIMEOUT", SecondsArg(), _udp_timeouts[0])
 	.read("UDP_GUARANTEE", SecondsArg(), _udp_timeouts[1])
+/*added to configure database connection*/
+	.read("BACK_UP", backup)
+	.read("RESTORE", restored)
+	.read_p("SERVER", server)
+	.read_p("DATABASE", database)
+	.read_p("RW_ID", user) 
+	.read_p("RW_PASSWD", passwd) 
+/*end of connection configuration*/
 	.consume() < 0)
 	return -1;
 
     _udp_timeouts[0] *= CLICK_HZ; // change timeouts to jiffies
     _udp_timeouts[1] *= CLICK_HZ;
+
+	_server	  = server;
+	_database = database;
+	_user	  = user;
+	_passwd	  = passwd;
+
+	// added because of backup
+	if(backup)
+		init_connection();
 
     return TCPRewriter::configure(conf, errh);
 }
@@ -125,14 +146,14 @@ IPRewriter::push(int port, Packet *p_in)
     click_ip *iph = p->ip_header();
 
 /*#########################*/
-	if(crashed){
+	if(restored){
 		restore();
-		crashed = false;
-	}
+		restored = false;
+	} 
 /*#########################*/
 
     // handle non-first fragments
-    if ((iph->ip_p != IP_PROTO_TCP && iph->ip_p != IP_PROTO_UDP)
+    if ((iph->ip_p != IP_PROTO_TCP && iph->ip_p != IP_PROTO_UDP) //iprewriter only handles tcp/udp packets, for others just push out
 	|| !IP_FIRSTFRAG(iph)
 	|| p->transport_length() < 8) {
 	const IPRewriterInput &is = _input_specs[port];
@@ -161,7 +182,7 @@ IPRewriter::push(int port, Packet *p_in)
 	
 		// sent newly added mapping to database
 		remote_copy_flow(iph->ip_p, flowid, rewritten_flowid, port);
-		remote_del_flow(iph->ip_p, flowid);
+		//remote_del_flow(iph->ip_p, flowid);
     }
 	// set the expiry time;
     click_jiffies_t now_j = click_jiffies();
@@ -206,14 +227,9 @@ IPRewriter::add_handlers()
 /* background unit to copy and send flow to remote database */
 void 
 IPRewriter::init_connection(){
-	server      = "localhost";
-    user        = "user";
-    passwd      = "password";
-    database    = "flow_table";
 
-	mysql_init(&mysql);
-	conn = mysql_real_connect(&mysql, server, user,
-							  passwd, database, 3306,
+conn = mysql_real_connect(&mysql, _server.c_str(), _user.c_str(),
+							  _passwd.c_str(), _database.c_str(), 3306,
 							  0, 0);
 	if( conn == NULL )
 		cout << "connection to database failed" << endl;
@@ -221,12 +237,11 @@ IPRewriter::init_connection(){
 
 void 
 IPRewriter::destroy_connection(){
-	//mysql_free_result(res);
 	mysql_close(conn);
 }
 
 void 
-IPRewriter::remote_copy_flow(unsigned char ip_p, IPFlowID &flowid, IPFlowID &rewritten_flowid, int port){
+IPRewriter::remote_copy_flow(int ip_p, IPFlowID &flowid, IPFlowID &rewritten_flowid, int port){
 	int res;
 	string query("INSERT INTO ftable (pro, saddr, sport, daddr, dport, _saddr, _sport, _daddr, _dport, port) VALUES ( '");
 	stringstream s;
@@ -242,7 +257,8 @@ IPRewriter::remote_copy_flow(unsigned char ip_p, IPFlowID &flowid, IPFlowID &rew
 	s << port << "' )";
 
 	// Send the insert query
-	res = mysql_query(conn, s.str().c_str());
+	string tmp = s.str();
+	res = mysql_query(conn, tmp.c_str());
 	if(res != 0){
 		cout << "copy failed" << endl;
 		return;
@@ -251,7 +267,7 @@ IPRewriter::remote_copy_flow(unsigned char ip_p, IPFlowID &flowid, IPFlowID &rew
 }
 
 void 
-IPRewriter::remote_del_flow(unsigned char ip_p, IPFlowID flowid){
+IPRewriter::remote_del_flow(int ip_p, IPFlowID flowid){
 	int res;
 	string query("DELETE FROM ftable WHERE ");
 	stringstream s;
@@ -262,7 +278,10 @@ IPRewriter::remote_del_flow(unsigned char ip_p, IPFlowID flowid){
     }
 
 	// Marshall parameters into query string
-	s << query << "pro = '" << ip_p << "' AND saddr = '" << flowid.saddr() << "' AND sport = '" << flowid.sport()<< "' AND daddr = '" << flowid.daddr() << "' AND dport = '" << flowid.dport() << "'";
+	s << query << "pro = '" << ip_p;
+	s << "' AND saddr = '" << flowid.saddr() << "' AND sport = '" << flowid.sport();
+	s << "' AND daddr = '" << flowid.daddr() << "' AND dport = '" << flowid.dport();
+	s << "'";
 
 	// Send the delete query
 	res = mysql_query(conn, s.str().c_str()); 
@@ -299,10 +318,10 @@ void IPRewriter::restore(){
 	while((row = mysql_fetch_row(result))){
 	// add_flow(iph->ip_p, flowid, rewritten_flowid, port);
 	
-		add_flow(atoi(row[0]), 
-				*(new IPFlowID(atoi(row[1]), (short)(atoi(row[2])), atoi(row[3]), (short)(atoi(row[4])))), 
-				*(new IPFlowID(atoi(row[5]), (short)(atoi(row[6])), atoi(row[7]), (short)(atoi(row[8])))), 
-				atoi(row[9]));
+		IPRewriter :: add_flow((uint8_t)atoi(row[0]), 
+							*(new IPFlowID(atoi(row[1]), (short)(atoi(row[2])), atoi(row[3]), (short)(atoi(row[4])))), 
+							*(new IPFlowID(atoi(row[5]), (short)(atoi(row[6])), atoi(row[7]), (short)(atoi(row[8])))), 
+							atoi(row[9]));
 	}
 	
 	cout << "finished initialization" << endl;

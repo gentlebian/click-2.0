@@ -2,6 +2,7 @@
 #define CLICK_IPREWRITER_HH
 #include "tcprewriter.hh"
 #include "udprewriter.hh"
+#include <click/string.hh>
 #include <mysql/mysql.h>
 CLICK_DECLS
 class UDPRewriter;
@@ -249,13 +250,14 @@ class IPRewriter : public TCPRewriter { public:
     static String udp_mappings_handler(Element *e, void *user_data);
 
 	/* set to true if crashed */
-	bool crashed = true;
+	bool backup;
+	bool restored;
 
 	/* background unit to copy and send flow to remote database */
-	const char *server;
-	const char *user;
-	const char *passwd;
-	const char *database;
+	String _server;
+	String _user;
+	String _passwd;
+	String _database;
 
 	MYSQL *conn;
 	MYSQL *res;
@@ -264,14 +266,21 @@ class IPRewriter : public TCPRewriter { public:
 
 	void init_connection();
 	void destroy_connection();
-	void remote_copy_flow(unsigned char ip_p, IPFlowID &flowid, IPFlowID &rewritten_flowid, int port);
-	void remote_del_flow(unsigned char ip_p, IPFlowID flowid);
+	void remote_copy_flow(int ip_p, IPFlowID &flowid, IPFlowID &rewritten_flowid, int port);
+	void remote_del_flow(int ip_p, IPFlowID flowid);
 };
 
 
 inline void
 IPRewriter::destroy_flow(IPRewriterFlow *flow)
 {
+	// What ever the case, need to delete the flow of both sides
+	if(conn){
+		unsigned char tmp = flow->ip_p();
+		remote_del_flow(tmp, flow->entry(0).flowid());
+		remote_del_flow(tmp, flow->entry(1).flowid());
+	}
+
     if (flow->ip_p() == IP_PROTO_TCP){
 		TCPRewriter::destroy_flow(flow); // this will also call unmap_flow. it will set the reply _map accordingly. 
     } else {
@@ -279,13 +288,6 @@ IPRewriter::destroy_flow(IPRewriterFlow *flow)
 	flow->~IPRewriterFlow();
 	_udp_allocator.deallocate(flow);
     }
-
-	// What ever the case, need to delete the flow of both sides
-	if(conn){
-		unsigned char tmp = flow->ip_p();
-		remote_del_flow(tmp, flow->entry(0).flowid());
-		remote_del_flow(tmp, flow->entry(1).flowid());
-	}
 }
 
 CLICK_ENDDECLS
